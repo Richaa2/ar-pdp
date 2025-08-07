@@ -27,8 +27,8 @@ public class SampleRender {
 
   private final AssetManager assetManager;
 
-  private int viewportWidth = 1;
-  private int viewportHeight = 1;
+   public int viewportWidth = 1;
+   public int viewportHeight = 1;
 
   /**
    * Constructs a SampleRender object and instantiates GLSurfaceView parameters.
