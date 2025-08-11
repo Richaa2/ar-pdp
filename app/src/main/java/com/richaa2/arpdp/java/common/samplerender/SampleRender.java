@@ -142,6 +142,12 @@ public class SampleRender {
       viewportWidth = framebuffer.getWidth();
       viewportHeight = framebuffer.getHeight();
     }
+
+    // Ensure we only bind a valid framebuffer ID; fallback to default 0 if not
+    if (framebufferId != 0 && !GLES30.glIsFramebuffer(framebufferId)) {
+      framebufferId = 0;
+    }
+
     GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, framebufferId);
     GLError.maybeThrowGLException("Failed to bind framebuffer", "glBindFramebuffer");
     GLES30.glViewport(0, 0, viewportWidth, viewportHeight);

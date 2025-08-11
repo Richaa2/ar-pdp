@@ -15,27 +15,35 @@
  */
 package com.richaa2.arpdp.kotlin.helloar
 
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.opengl.GLES30
 import android.opengl.Matrix
 import android.util.Log
+import androidx.core.graphics.createBitmap
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.google.ar.core.Anchor
 import com.google.ar.core.Camera
-import com.google.ar.core.DepthPoint
 import com.google.ar.core.Frame
-import com.google.ar.core.InstantPlacementPoint
+import com.google.ar.core.HitResult
 import com.google.ar.core.LightEstimate
 import com.google.ar.core.Plane
-import com.google.ar.core.Point
 import com.google.ar.core.Session
 import com.google.ar.core.Trackable
 import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
+import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.DeadlineExceededException
+import com.google.ar.core.exceptions.NotYetAvailableException
+import com.richaa2.arpdp.R
 import com.richaa2.arpdp.java.common.helpers.DisplayRotationHelper
 import com.richaa2.arpdp.java.common.helpers.TrackingStateHelper
 import com.richaa2.arpdp.java.common.samplerender.Framebuffer
 import com.richaa2.arpdp.java.common.samplerender.GLError
+import com.richaa2.arpdp.java.common.samplerender.IndexBuffer
 import com.richaa2.arpdp.java.common.samplerender.Mesh
 import com.richaa2.arpdp.java.common.samplerender.SampleRender
 import com.richaa2.arpdp.java.common.samplerender.Shader
@@ -44,12 +52,6 @@ import com.richaa2.arpdp.java.common.samplerender.VertexBuffer
 import com.richaa2.arpdp.java.common.samplerender.arcore.BackgroundRenderer
 import com.richaa2.arpdp.java.common.samplerender.arcore.PlaneRenderer
 import com.richaa2.arpdp.java.common.samplerender.arcore.SpecularCubemapFilter
-import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.NotYetAvailableException
-import com.google.ar.core.exceptions.DeadlineExceededException
-import com.richaa2.arpdp.R
-import com.richaa2.arpdp.java.common.samplerender.IndexBuffer
-import com.richaa2.arpdp.kotlin.helloar.HelloArActivity
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -115,6 +117,13 @@ class HelloArRenderer(val activity: HelloArActivity) :
     lateinit var reticleVertexBuffer: VertexBuffer
     lateinit var reticleIndexBuffer: IndexBuffer
 
+    // Anchor visualization (distance label and plane indicator)
+    private lateinit var distanceShader: Shader
+    private lateinit var distanceQuadMesh: Mesh
+    private lateinit var circleShader: Shader
+    private lateinit var circleMesh: Mesh
+    private var distanceTexture: Texture? = null
+
     // Keep track of the last point cloud rendered to avoid updating the VBO if point cloud
     // was not changed.  Do this using the timestamp since we can't compare PointCloud objects.
     var lastPointCloudTimestamp: Long = 0
@@ -160,6 +169,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
     }
 
     override fun onSurfaceCreated(render: SampleRender) {
+        this.render = render
         // Prepare the rendering objects.
         // This involves reading shaders and 3D model files, so may throw an IOException.
         try {
@@ -316,6 +326,89 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 /*defines=*/ null
             ).setVec4("u_Color", floatArrayOf(1f,1f,1f,1f))
 
+            // Distance label shader and quad
+            distanceShader = Shader.createFromAssets(
+                render,
+                "shaders/distance_label.vert",
+                "shaders/distance_label.frag",
+                null
+            )
+
+            val labelSize = 0.1f
+            val labelHalf = labelSize / 2f
+            val labelVerts = floatArrayOf(
+                -labelHalf, 0f, 0f,
+                 labelHalf, 0f, 0f,
+                 labelHalf, labelSize, 0f,
+                -labelHalf, labelSize, 0f
+            )
+            val labelBuffer: FloatBuffer = ByteBuffer
+                .allocateDirect(labelVerts.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(labelVerts)
+                .apply { position(0) }
+            val labelVertexBuffer = VertexBuffer(render, 3, labelBuffer)
+            val labelIndices = intArrayOf(0, 1, 2, 0, 2, 3)
+            val labelIndexBuffer: IntBuffer = ByteBuffer
+                .allocateDirect(labelIndices.size * Int.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asIntBuffer()
+                .put(labelIndices)
+                .apply { position(0) }
+
+            val labelUvs = floatArrayOf(
+                0f, 1f,
+                1f, 1f,
+                1f, 0f,
+                0f, 0f
+            )
+            val uvBuffer = ByteBuffer
+                .allocateDirect(labelUvs.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(labelUvs)
+                .apply { position(0) }
+            val uvVertexBuffer = VertexBuffer(render, /*entriesPerVertex=*/2, uvBuffer)
+
+            // Now build the mesh with both position and UV buffers
+            distanceQuadMesh = Mesh(
+                render,
+                Mesh.PrimitiveMode.TRIANGLES,
+                IndexBuffer(render, labelIndexBuffer),
+                arrayOf(labelVertexBuffer, uvVertexBuffer)
+            )
+
+            // Circle shader and mesh
+            circleShader = Shader.createFromAssets(
+                render,
+                "shaders/circle.vert",
+                "shaders/circle.frag",
+                null
+            )
+            val circleSegments = 32
+            val circleVerts = FloatArray((circleSegments + 1) * 3)
+            val angleStep = (2 * Math.PI / circleSegments).toFloat()
+            for (i in 0..circleSegments) {
+                val angle = i * angleStep
+                circleVerts[i * 3] = (Math.cos(angle.toDouble()) * labelHalf).toFloat()
+                circleVerts[i * 3 + 1] = 0f
+                circleVerts[i * 3 + 2] = (Math.sin(angle.toDouble()) * labelHalf).toFloat()
+            }
+            val circleBuffer: FloatBuffer = ByteBuffer
+                .allocateDirect(circleVerts.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(circleVerts)
+                .apply { position(0) }
+            val circleVertexBuffer = VertexBuffer(render, 3, circleBuffer)
+            circleMesh = Mesh(
+                render,
+                Mesh.PrimitiveMode.LINE_LOOP,
+                /*indexBuffer=*/ null,
+                arrayOf(circleVertexBuffer)
+            )
+
         } catch (e: IOException) {
             Log.e(TAG, "Failed to read a required asset file", e)
             showError("Failed to read a required asset file: $e")
@@ -357,6 +450,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 showError("Camera not available. Try restarting the app.")
                 return
             }
+
 
         val camera = frame.camera
 
@@ -487,34 +581,34 @@ class HelloArRenderer(val activity: HelloArActivity) :
         // Visualize anchors created by touch.
         render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
         for ((anchor, trackable) in
-        wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
-            // Get the current pose of an Anchor in world space. The Anchor pose is updated
-            // during calls to session.update() as ARCore refines its estimate of the world.
+            wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
+            // Orient quad flush on the plane (no billboarding)
             anchor.pose.toMatrix(modelMatrix, 0)
-
-            // Calculate model/view/projection matrices
             Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
-
-            // Update shader properties and draw
-            virtualObjectShader.setMat4("u_ModelView", modelViewMatrix)
-            virtualObjectShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix)
-            val texture =
-                if ((trackable as? InstantPlacementPoint)?.trackingMethod ==
-                    InstantPlacementPoint.TrackingMethod.SCREENSPACE_WITH_APPROXIMATE_DISTANCE
-                ) {
-                    virtualObjectAlbedoInstantPlacementTexture
-                } else {
-                    virtualObjectAlbedoTexture
-                }
-            virtualObjectShader.setTexture("u_AlbedoTexture", texture)
-            render.draw(virtualObjectMesh, virtualObjectShader, virtualSceneFramebuffer)
+            val camPose = frame.camera.pose
+            val objPose = anchor.pose
+            val dx = objPose.tx() - camPose.tx()
+            val dy = objPose.ty() - camPose.ty()
+            val dz = objPose.tz() - camPose.tz()
+            val distCm = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+            // update or create the distance texture from the current distance
+            updateDistanceTexture(distCm)
+            // bind the updated texture to the shader and draw the quad
+            distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
+            distanceShader.setTexture("u_Texture", distanceTexture!!)
+            // draw distance label
+            render.draw(distanceQuadMesh, distanceShader)
+            // draw circle indicator flush on plane
+            circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+            render.draw(circleMesh, circleShader)
         }
+
+        measureDistanceFromCamera(frame)
 
         // Compose the virtual scene with the background.
         backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR)
     }
-
     /** Checks if we detected at least one plane. */
     private fun Session.hasTrackingPlane() =
         getAllTrackables(Plane::class.java).any { it.trackingState == TrackingState.TRACKING }
@@ -583,74 +677,77 @@ class HelloArRenderer(val activity: HelloArActivity) :
     private fun handleTap(frame: Frame, camera: Camera) {
         if (camera.trackingState != TrackingState.TRACKING) return
         val tap = activity.view.tapHelper.poll() ?: return
-
-        val hitResultList =
-            if (activity.instantPlacementSettings.isInstantPlacementEnabled) {
-                frame.hitTestInstantPlacement(tap.x, tap.y, APPROXIMATE_DISTANCE_METERS)
-            } else {
-                frame.hitTest(tap)
-            }
-
-        // Hits are sorted by depth. Consider only closest hit on a plane, Oriented Point, Depth Point,
-        // or Instant Placement Point.
-        val firstHitResult =
-            hitResultList.firstOrNull { hit ->
-                when (val trackable = hit.trackable!!) {
-                    is Plane ->
-                        trackable.isPoseInPolygon(hit.hitPose) &&
-                                PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-
-                    is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                    is InstantPlacementPoint -> true
-                    // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
-                    is DepthPoint -> true
-                    else -> false
-                }
-            }
-
-        if (firstHitResult != null) {
-            // Cap the number of objects created. This avoids overloading both the
-            // rendering system and ARCore.
-            if (wrappedAnchors.size >= 20) {
-                wrappedAnchors[0].anchor.detach()
-                wrappedAnchors.removeAt(0)
-            }
-
-            // Adding an Anchor tells ARCore that it should track this position in
-            // space. This anchor is created on the Plane to place the 3D model
-            // in the correct position relative both to the world and to the plane.
-            wrappedAnchors.add(
-                WrappedAnchor(
-                    firstHitResult.createAnchor(),
-                    firstHitResult.trackable
-                )
-            )
-
-            // For devices that support the Depth API, shows a dialog to suggest enabling
-            // depth-based occlusion. This dialog needs to be spawned on the UI thread.
-            activity.runOnUiThread { activity.view.showOcclusionDialogIfNeeded() }
-        }
+        val firstHit = frame.hitTest(tap).firstOrNull() ?: return  // якщо порожній — виходимо
+        placeAnchor(firstHit)
     }
 
     private fun showError(errorMessage: String) =
         activity.view.snackbarHelper.showError(activity, errorMessage)
 
-    private fun drawReticleAtPose(render: SampleRender, pose: com.google.ar.core.Pose) {
 
-        pose.toMatrix(modelMatrix, 0)
+    fun updateDistanceTexture(distCm: Float) {
+        val texW = 512
+        val texH = 256
+        val bmp = createBitmap(texW, texH)
+        val canvas = Canvas(bmp)
 
-        Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-        Matrix.multiplyMM(
-            modelViewProjectionMatrix, 0,
-            projectionMatrix, 0,
-            modelViewMatrix,   0
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isLinearText = true
+            textSize = texH * 0.5f
+            textAlign = Paint.Align.CENTER
+            color = Color.WHITE
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        }
+
+        val bgPaint = Paint().apply {
+            isAntiAlias = true
+            color = Color.argb(200, 0, 0, 0)
+        }
+        canvas.drawRoundRect(
+            0f, texH*0.25f, texW.toFloat(), texH*0.75f, 20f, 20f, bgPaint
         )
 
+        canvas.drawText(
+            "%.2f m".format(distCm),
+            texW * 0.5f,
+            texH * 0.6f,
+            paint
+        )
 
-        reticleShader
-            .setMat4("u_ModelViewProjection", modelViewProjectionMatrix)
-        render.draw(reticleMesh, reticleShader)
+        distanceTexture = Texture.createFromBitmap(
+            render,
+            bmp,
+            Texture.WrapMode.CLAMP_TO_EDGE,
+            Texture.ColorFormat.SRGB
+        )
     }
+
+    private fun placeAnchor(hitResult: HitResult) {
+
+        anchor?.detach()
+        wrappedAnchors.clear()
+
+        val anchor = hitResult.createAnchor()
+        wrappedAnchors.add(WrappedAnchor(anchor, hitResult.trackable!!))
+        Log.d(TAG, "Anchor placed at: ${anchor.pose}")
+    }
+
+    private fun measureDistanceFromCamera(frame: Frame) {
+        if (wrappedAnchors.isNotEmpty()) {
+            val camPose = frame.camera.pose
+            val objPose = wrappedAnchors[0].anchor.pose
+
+            val dx = objPose.tx() - camPose.tx()
+            val dy = objPose.ty() - camPose.ty()
+            val dz = objPose.tz() - camPose.tz()
+            val distMeters = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+
+            Log.d(TAG, "Distance to first anchor: %.2f m".format(distMeters))
+        }
+    }
+    private var anchor: Anchor? = null
+
 }
 
 /**

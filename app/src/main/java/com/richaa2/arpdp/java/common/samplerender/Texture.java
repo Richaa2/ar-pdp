@@ -168,6 +168,38 @@ public class Texture implements Closeable {
     return texture;
   }
 
+  public static Texture createFromBitmap(
+      SampleRender render, Bitmap bitmap, WrapMode wrapMode, ColorFormat colorFormat) {
+    Texture texture = new Texture(render, Target.TEXTURE_2D, wrapMode, /*useMipmaps=*/ true);
+    try {
+      // Convert bitmap to ARGB_8888 config if needed.
+      Bitmap safeBitmap = convertBitmapToConfig(bitmap, Bitmap.Config.ARGB_8888);
+      ByteBuffer buffer = ByteBuffer.allocateDirect(safeBitmap.getByteCount());
+      safeBitmap.copyPixelsToBuffer(buffer);
+      buffer.rewind();
+
+      GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, texture.getTextureId());
+      GLError.maybeThrowGLException("Failed to bind texture", "glBindTexture");
+      GLES30.glTexImage2D(
+          GLES30.GL_TEXTURE_2D,
+          /*level=*/ 0,
+          colorFormat.glesEnum,
+          safeBitmap.getWidth(),
+          safeBitmap.getHeight(),
+          /*border=*/ 0,
+          GLES30.GL_RGBA,
+          GLES30.GL_UNSIGNED_BYTE,
+          buffer);
+      GLError.maybeThrowGLException("Failed to populate texture data", "glTexImage2D");
+      GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D);
+      GLError.maybeThrowGLException("Failed to generate mipmaps", "glGenerateMipmap");
+    } catch (Throwable t) {
+      texture.close();
+      throw t;
+    }
+    return texture;
+  }
+
   @Override
   public void close() {
     if (textureId[0] != 0) {
