@@ -52,6 +52,7 @@ import com.richaa2.arpdp.java.common.samplerender.VertexBuffer
 import com.richaa2.arpdp.java.common.samplerender.arcore.BackgroundRenderer
 import com.richaa2.arpdp.java.common.samplerender.arcore.PlaneRenderer
 import com.richaa2.arpdp.java.common.samplerender.arcore.SpecularCubemapFilter
+import com.richaa2.arpdp.kotlin.common.MeasurementMode
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -61,9 +62,13 @@ import java.nio.IntBuffer
 /** Renders the HelloAR application using our example Renderer. */
 class HelloArRenderer(val activity: HelloArActivity) :
     SampleRender.Renderer, DefaultLifecycleObserver {
+
+    var selectedMode: MeasurementMode = MeasurementMode.Camera
+
     // Stored view dimensions for center hit-test
     private var viewWidth: Int = 0
     private var viewHeight: Int = 0
+
     companion object {
         val TAG = "HelloArRenderer"
 
@@ -324,7 +329,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 "shaders/quad.vert",
                 "shaders/quad.frag",
                 /*defines=*/ null
-            ).setVec4("u_Color", floatArrayOf(1f,1f,1f,1f))
+            ).setVec4("u_Color", floatArrayOf(1f, 1f, 1f, 1f))
 
             // Distance label shader and quad
             distanceShader = Shader.createFromAssets(
@@ -338,8 +343,8 @@ class HelloArRenderer(val activity: HelloArActivity) :
             val labelHalf = labelSize / 2f
             val labelVerts = floatArrayOf(
                 -labelHalf, 0f, 0f,
-                 labelHalf, 0f, 0f,
-                 labelHalf, labelSize, 0f,
+                labelHalf, 0f, 0f,
+                labelHalf, labelSize, 0f,
                 -labelHalf, labelSize, 0f
             )
             val labelBuffer: FloatBuffer = ByteBuffer
@@ -581,7 +586,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
         // Visualize anchors created by touch.
         render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
         for ((anchor, trackable) in
-            wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
+        wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
             // Orient quad flush on the plane (no billboarding)
             anchor.pose.toMatrix(modelMatrix, 0)
             Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
@@ -591,7 +596,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
             val dx = objPose.tx() - camPose.tx()
             val dy = objPose.ty() - camPose.ty()
             val dz = objPose.tz() - camPose.tz()
-            val distCm = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+            val distCm = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
             // update or create the distance texture from the current distance
             updateDistanceTexture(distCm)
             // bind the updated texture to the shader and draw the quad
@@ -609,6 +614,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
         // Compose the virtual scene with the background.
         backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR)
     }
+
     /** Checks if we detected at least one plane. */
     private fun Session.hasTrackingPlane() =
         getAllTrackables(Plane::class.java).any { it.trackingState == TrackingState.TRACKING }
@@ -676,9 +682,18 @@ class HelloArRenderer(val activity: HelloArActivity) :
     // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
     private fun handleTap(frame: Frame, camera: Camera) {
         if (camera.trackingState != TrackingState.TRACKING) return
-        val tap = activity.view.tapHelper.poll() ?: return
-        val firstHit = frame.hitTest(tap).firstOrNull() ?: return  // якщо порожній — виходимо
-        placeAnchor(firstHit)
+        when(selectedMode) {
+            MeasurementMode.Camera -> {
+                val tap = activity.view.tapHelper.poll() ?: return
+                val firstHit = frame.hitTest(tap).firstOrNull() ?: return
+                placeAnchor(firstHit)
+            }
+            MeasurementMode.TwoPoints -> {
+
+            }
+            MeasurementMode.SeveralPoints -> TODO()
+        }
+
     }
 
     private fun showError(errorMessage: String) =
@@ -705,7 +720,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
             color = Color.argb(200, 0, 0, 0)
         }
         canvas.drawRoundRect(
-            0f, texH*0.25f, texW.toFloat(), texH*0.75f, 20f, 20f, bgPaint
+            0f, texH * 0.25f, texW.toFloat(), texH * 0.75f, 20f, 20f, bgPaint
         )
 
         canvas.drawText(
@@ -741,13 +756,55 @@ class HelloArRenderer(val activity: HelloArActivity) :
             val dx = objPose.tx() - camPose.tx()
             val dy = objPose.ty() - camPose.ty()
             val dz = objPose.tz() - camPose.tz()
-            val distMeters = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+            val distMeters = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
 
             Log.d(TAG, "Distance to first anchor: %.2f m".format(distMeters))
         }
     }
+
     private var anchor: Anchor? = null
 
+
+    /**
+     * Fully reset renderer state when switching modes.
+     * Detaches all anchors, clears lists/caches and resets per-frame state
+     * so the next frame starts "from scratch".
+     */
+    private fun resetForModeChange() {
+        // Detach and clear all placed anchors
+        try {
+            wrappedAnchors.forEach { it.anchor.detach() }
+        } catch (_: Exception) { /* ignore */ }
+        wrappedAnchors.clear()
+
+        // Detach single reference anchor if present
+        try {
+            anchor?.detach()
+        } catch (_: Exception) { /* ignore */ }
+        anchor = null
+
+        // Drop dynamic textures so they can be recreated fresh
+        distanceTexture = null
+
+        // Reset transient rendering state
+        lastPointCloudTimestamp = 0L
+
+        // Optionally clear the offscreen framebuffer to avoid ghosting
+        if (this::virtualSceneFramebuffer.isInitialized) {
+            try {
+                render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
+            } catch (_: Exception) { /* ignore */ }
+        }
+
+        Log.d(TAG, "Renderer state reset for mode change")
+    }
+
+    fun setSelectedMeasurementMode(mode: MeasurementMode) {
+        if (mode == selectedMode) return
+        selectedMode = mode
+        resetForModeChange()
+        Log.d("TAG", "selectedmode -> $mode ");
+    }
 }
 
 /**
