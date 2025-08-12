@@ -31,6 +31,7 @@ import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.LightEstimate
 import com.google.ar.core.Plane
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.Trackable
 import com.google.ar.core.TrackingFailureReason
@@ -58,6 +59,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 /** Renders the HelloAR application using our example Renderer. */
 class HelloArRenderer(val activity: HelloArActivity) :
@@ -128,6 +131,11 @@ class HelloArRenderer(val activity: HelloArActivity) :
     private lateinit var circleShader: Shader
     private lateinit var circleMesh: Mesh
     private var distanceTexture: Texture? = null
+
+    private lateinit var circleFillMesh: Mesh
+    private lateinit var circleFillShader: Shader
+
+    private lateinit var dotFillMesh: Mesh
 
     // Keep track of the last point cloud rendered to avoid updating the VBO if point cloud
     // was not changed.  Do this using the timestamp since we can't compare PointCloud objects.
@@ -414,6 +422,81 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 arrayOf(circleVertexBuffer)
             )
 
+
+
+            circleFillShader = Shader.createFromAssets(
+                render,
+                "shaders/circle_fill.vert",
+                "shaders/circle_fill.frag",
+                null
+            ).setVec4("u_Color", floatArrayOf(1f, 1f, 1f, 1f))
+
+            val seg = 48
+            val radius = labelHalf // або свій радіус
+            val fanVerts = FloatArray((seg + 2) * 3) // центр + seg + повернення
+            // центр
+            fanVerts[0] = 0f; fanVerts[1] = 0f; fanVerts[2] = 0f
+            val step = (2.0 * Math.PI / seg)
+            for (i in 0..seg) {
+                val a = i * step
+                val x = (Math.cos(a) * radius).toFloat()
+                val z = (Math.sin(a) * radius).toFloat()
+                val o = (i + 1) * 3
+                fanVerts[o]     = x
+                fanVerts[o + 1] = 0f
+                fanVerts[o + 2] = z
+            }
+            val fanBuffer = ByteBuffer.allocateDirect(fanVerts.size * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer().put(fanVerts).apply { position(0) }
+            val fanVbo = VertexBuffer(render, 3, fanBuffer)
+            // build indices for triangles: (0, i, i+1)
+            val triIdx = IntArray(seg * 3)
+            var k = 0
+            for (i in 1..seg) {
+                triIdx[k++] = 0
+                triIdx[k++] = i
+                triIdx[k++] = i + 1
+            }
+            val triIdxBuf = ByteBuffer.allocateDirect(triIdx.size * Int.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder()).asIntBuffer().put(triIdx).apply { position(0) }
+            val triIbo = IndexBuffer(render, triIdxBuf)
+            circleFillMesh = Mesh(render, Mesh.PrimitiveMode.TRIANGLES, triIbo, arrayOf(fanVbo))
+
+
+
+            // --- Small center dot (filled circle) ---
+            val dotSeg = 48
+            val dotRadius = radius * 0.5f // половина радіуса зовнішнього круга
+            val dotVerts = FloatArray((dotSeg + 2) * 3)
+// центр
+            dotVerts[0] = 0f; dotVerts[1] = 0f; dotVerts[2] = 0f
+            val dotStep = (2.0 * Math.PI / dotSeg)
+            for (i in 0..dotSeg) {
+                val a = i * dotStep
+                val x = (Math.cos(a) * dotRadius).toFloat()
+                val z = (Math.sin(a) * dotRadius).toFloat()
+                val o = (i + 1) * 3
+                dotVerts[o]     = x
+                dotVerts[o + 1] = 0f
+                dotVerts[o + 2] = z
+            }
+            val dotBuf = ByteBuffer.allocateDirect(dotVerts.size * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer()
+                .put(dotVerts).apply { position(0) }
+            val dotVbo = VertexBuffer(render, 3, dotBuf)
+// індекси для трикутників (0, i, i+1)
+            val dotIdx = IntArray(dotSeg * 3)
+            var dk = 0
+            for (i in 1..dotSeg) {
+                dotIdx[dk++] = 0
+                dotIdx[dk++] = i
+                dotIdx[dk++] = i + 1
+            }
+            val dotIdxBuf = ByteBuffer.allocateDirect(dotIdx.size * Int.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder()).asIntBuffer()
+                .put(dotIdx).apply { position(0) }
+            val dotIbo = IndexBuffer(render, dotIdxBuf)
+            dotFillMesh = Mesh(render, Mesh.PrimitiveMode.TRIANGLES, dotIbo, arrayOf(dotVbo))
         } catch (e: IOException) {
             Log.e(TAG, "Failed to read a required asset file", e)
             showError("Failed to read a required asset file: $e")
@@ -582,34 +665,105 @@ class HelloArRenderer(val activity: HelloArActivity) :
 
         // Update lighting parameters in the shader
         updateLightEstimation(frame.lightEstimate, viewMatrix)
+        when (selectedMode) {
+            MeasurementMode.Camera -> {
+                // Visualize anchors created by touch.
+                render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
+                for ((anchor, trackable) in
+                wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
+                    // Orient quad flush on the plane (no billboarding)
+                    anchor.pose.toMatrix(modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+                    Matrix.multiplyMM(
+                        modelViewProjectionMatrix,
+                        0,
+                        projectionMatrix,
+                        0,
+                        modelViewMatrix,
+                        0
+                    )
+                    val camPose = frame.camera.pose
+                    val objPose = anchor.pose
+                    val dx = objPose.tx() - camPose.tx()
+                    val dy = objPose.ty() - camPose.ty()
+                    val dz = objPose.tz() - camPose.tz()
+                    val distCm = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+                    // update or create the distance texture from the current distance
+                    updateDistanceTexture(distCm)
+                    // bind the updated texture to the shader and draw the quad
+                    distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    distanceShader.setTexture("u_Texture", distanceTexture!!)
+                    // draw distance label
+                    render.draw(distanceQuadMesh, distanceShader)
+                    // draw circle indicator flush on plane
+                    circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    render.draw(circleMesh, circleShader)
+                }
 
-        // Visualize anchors created by touch.
-        render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
-        for ((anchor, trackable) in
-        wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
-            // Orient quad flush on the plane (no billboarding)
-            anchor.pose.toMatrix(modelMatrix, 0)
-            Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-            Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
-            val camPose = frame.camera.pose
-            val objPose = anchor.pose
-            val dx = objPose.tx() - camPose.tx()
-            val dy = objPose.ty() - camPose.ty()
-            val dz = objPose.tz() - camPose.tz()
-            val distCm = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-            // update or create the distance texture from the current distance
-            updateDistanceTexture(distCm)
-            // bind the updated texture to the shader and draw the quad
-            distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
-            distanceShader.setTexture("u_Texture", distanceTexture!!)
-            // draw distance label
-            render.draw(distanceQuadMesh, distanceShader)
-            // draw circle indicator flush on plane
-            circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
-            render.draw(circleMesh, circleShader)
+                measureDistanceFromCamera(frame)
+            }
+
+            MeasurementMode.TwoPoints -> {
+                render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
+
+
+                for ((anchor, _) in wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
+
+                    val pose = anchor.pose
+                    pose.toMatrix(modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+
+//
+//                    circleFillShader.setMat4("u_MVP", modelViewProjectionMatrix)
+//                    render.draw(circleFillMesh, circleFillShader)
+//
+//                    render.draw(dotFillMesh, circleFillShader)
+
+                    circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    render.draw(circleMesh, circleShader)
+
+                }
+
+
+                if (wrappedAnchors.size >= 2) {
+                    val a = wrappedAnchors[0].anchor.pose
+                    val b = wrappedAnchors[1].anchor.pose
+
+
+                    val dx = b.tx() - a.tx()
+                    val dy = b.ty() - a.ty()
+                    val dz = b.tz() - a.tz()
+                    val distMeters = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+
+
+                    val midT = floatArrayOf(
+                        (a.tx() + b.tx()) / 2f,
+                        (a.ty() + b.ty()) / 2f,
+                        (a.tz() + b.tz()) / 2f
+                    )
+
+                    val midQ = floatArrayOf(a.qx(), a.qy(), a.qz(), a.qw())
+                    val midPose = com.google.ar.core.Pose(midT, midQ)
+
+
+                    midPose.toMatrix(modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+
+
+                    updateDistanceTexture(distMeters)
+
+
+                    distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    distanceShader.setTexture("u_Texture", distanceTexture!!)
+                    render.draw(distanceQuadMesh, distanceShader)
+                }
+            }
+
+            MeasurementMode.SeveralPoints -> Unit
         }
 
-        measureDistanceFromCamera(frame)
 
         // Compose the virtual scene with the background.
         backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR)
@@ -682,15 +836,19 @@ class HelloArRenderer(val activity: HelloArActivity) :
     // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
     private fun handleTap(frame: Frame, camera: Camera) {
         if (camera.trackingState != TrackingState.TRACKING) return
-        when(selectedMode) {
+        when (selectedMode) {
             MeasurementMode.Camera -> {
                 val tap = activity.view.tapHelper.poll() ?: return
-                val firstHit = frame.hitTest(tap).firstOrNull() ?: return
-                placeAnchor(firstHit)
+                val hitResult = frame.hitTest(tap).firstOrNull() ?: return
+                placeAnchorCameraMode(hitResult)
             }
-            MeasurementMode.TwoPoints -> {
 
+            MeasurementMode.TwoPoints -> {
+                val tap = activity.view.tapHelper.poll() ?: return
+                val hitResult = frame.hitTest(tap).firstOrNull() ?: return
+                placeAnchorTwoPointsMode(hitResult)
             }
+
             MeasurementMode.SeveralPoints -> TODO()
         }
 
@@ -738,14 +896,32 @@ class HelloArRenderer(val activity: HelloArActivity) :
         )
     }
 
-    private fun placeAnchor(hitResult: HitResult) {
-
+    private fun placeAnchorCameraMode(hitResult: HitResult) {
         anchor?.detach()
         wrappedAnchors.clear()
 
         val anchor = hitResult.createAnchor()
         wrappedAnchors.add(WrappedAnchor(anchor, hitResult.trackable!!))
         Log.d(TAG, "Anchor placed at: ${anchor.pose}")
+    }
+
+    private fun placeAnchorTwoPointsMode(hitResult: HitResult) {
+        if (anchorPair == null) {
+            val firstAnchor = hitResult.createAnchor()
+            wrappedAnchors.add(WrappedAnchor(firstAnchor, hitResult.trackable))
+            anchorPair = Pair(firstAnchor, null)
+        } else if (anchorPair?.second == null) {
+            val secondAnchor = hitResult.createAnchor()
+            wrappedAnchors.add(WrappedAnchor(secondAnchor, hitResult.trackable))
+            anchorPair = anchorPair?.copy(second = secondAnchor)
+        } else {
+            anchorPair?.apply {
+                first.detach()
+                second?.detach()
+            }
+            anchorPair = null
+            wrappedAnchors.clear()
+        }
     }
 
     private fun measureDistanceFromCamera(frame: Frame) {
@@ -762,7 +938,30 @@ class HelloArRenderer(val activity: HelloArActivity) :
         }
     }
 
+    private fun calculateDistance(x: Float, y: Float, z: Float): Float {
+        return sqrt(x.pow(2) + y.pow(2) + z.pow(2))
+    }
+
+    private fun calculateDistance(objectPose0: Pose, objectPose1: Pose): Float {
+        return calculateDistance(
+            objectPose0.tx() - objectPose1.tx(),
+            objectPose0.ty() - objectPose1.ty(),
+            objectPose0.tz() - objectPose1.tz()
+        )
+    }
+
+
+    private fun changeUnit(distanceMeter: Float, unit: String): Float {
+        return when (unit) {
+            "cm" -> distanceMeter * 100
+            "mm" -> distanceMeter * 1000
+            else -> distanceMeter
+        }
+    }
+
     private var anchor: Anchor? = null
+
+    private var anchorPair: Pair<Anchor, Anchor?>? = null
 
 
     /**
@@ -774,13 +973,15 @@ class HelloArRenderer(val activity: HelloArActivity) :
         // Detach and clear all placed anchors
         try {
             wrappedAnchors.forEach { it.anchor.detach() }
-        } catch (_: Exception) { /* ignore */ }
+        } catch (_: Exception) { /* ignore */
+        }
         wrappedAnchors.clear()
 
         // Detach single reference anchor if present
         try {
             anchor?.detach()
-        } catch (_: Exception) { /* ignore */ }
+        } catch (_: Exception) { /* ignore */
+        }
         anchor = null
 
         // Drop dynamic textures so they can be recreated fresh
@@ -793,7 +994,8 @@ class HelloArRenderer(val activity: HelloArActivity) :
         if (this::virtualSceneFramebuffer.isInitialized) {
             try {
                 render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
-            } catch (_: Exception) { /* ignore */ }
+            } catch (_: Exception) { /* ignore */
+            }
         }
 
         Log.d(TAG, "Renderer state reset for mode change")
