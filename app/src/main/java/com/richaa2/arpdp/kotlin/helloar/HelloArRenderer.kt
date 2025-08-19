@@ -119,17 +119,13 @@ class HelloArRenderer(val activity: HelloArActivity) :
     lateinit var pointCloudMesh: Mesh
     lateinit var pointCloudShader: Shader
 
-    // Reticle
-    lateinit var reticleMesh: Mesh
-    lateinit var reticleShader: Shader
-    lateinit var reticleVertexBuffer: VertexBuffer
-    lateinit var reticleIndexBuffer: IndexBuffer
-
     // Anchor visualization (distance label and plane indicator)
     private lateinit var distanceShader: Shader
     private lateinit var distanceQuadMesh: Mesh
-    private lateinit var circleShader: Shader
-    private lateinit var circleMesh: Mesh
+    private lateinit var innerCircleShader: Shader
+    private lateinit var innerCircleMesh: Mesh
+    private lateinit var outerCircleShader: Shader
+    private lateinit var outerCircleMesh: Mesh
     private var distanceTexture: Texture? = null
 
     private lateinit var circleFillMesh: Mesh
@@ -295,50 +291,6 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     .setTexture("u_Cubemap", cubemapFilter.filteredCubemapTexture)
                     .setTexture("u_DfgTexture", dfgTexture)
 
-            //Center Reticle
-            val size = 0.05f
-            val half = size / 2
-
-            val quadVerts = floatArrayOf(
-                -half, 0f, -half,   // bottom-left
-                half, 0f, -half,   // bottom-right
-                half, 0f, half,   // top-right
-                -half, 0f, half    // top-left
-            )
-            // Create a FloatBuffer for the quad vertices
-            val quadBuffer: FloatBuffer = ByteBuffer
-                .allocateDirect(quadVerts.size * java.lang.Float.BYTES)
-                .order(ByteOrder.nativeOrder())
-                .asFloatBuffer()
-                .put(quadVerts)
-                .apply { position(0) }
-            reticleVertexBuffer = VertexBuffer(render, 3, quadBuffer)
-
-            // Define quad indices as ints
-            val quadIndices = intArrayOf(0, 1, 2, 0, 2, 3)
-            // Create a direct IntBuffer for the quad indices
-            val quadIndexBuffer: IntBuffer = ByteBuffer
-                .allocateDirect(quadIndices.size * Integer.BYTES)
-                .order(ByteOrder.nativeOrder())
-                .asIntBuffer()
-                .put(quadIndices)
-                .apply { position(0) }
-            reticleIndexBuffer = IndexBuffer(render, quadIndexBuffer)
-
-            reticleMesh = Mesh(
-                render,
-                Mesh.PrimitiveMode.TRIANGLES,
-                reticleIndexBuffer,
-                arrayOf(reticleVertexBuffer)
-            )
-
-            reticleShader = Shader.createFromAssets(
-                render,
-                "shaders/quad.vert",
-                "shaders/quad.frag",
-                /*defines=*/ null
-            ).setVec4("u_Color", floatArrayOf(1f, 1f, 1f, 1f))
-
             // Distance label shader and quad
             distanceShader = Shader.createFromAssets(
                 render,
@@ -393,7 +345,14 @@ class HelloArRenderer(val activity: HelloArActivity) :
             )
 
             // Circle shader and mesh
-            circleShader = Shader.createFromAssets(
+            innerCircleShader = Shader.createFromAssets(
+                render,
+                "shaders/inner_circle.vert",
+                "shaders/inner_circle.frag",
+                null
+            )
+
+            outerCircleShader = Shader.createFromAssets(
                 render,
                 "shaders/circle.vert",
                 "shaders/circle.frag",
@@ -415,13 +374,31 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 .put(circleVerts)
                 .apply { position(0) }
             val circleVertexBuffer = VertexBuffer(render, 3, circleBuffer)
-            circleMesh = Mesh(
+            outerCircleMesh = Mesh(
                 render,
                 Mesh.PrimitiveMode.LINE_LOOP,
                 /*indexBuffer=*/ null,
                 arrayOf(circleVertexBuffer)
             )
+            val pointVerts = floatArrayOf(
+                0f, 0.10f, 0f // X, Y, Z
+            )
 
+            val pointBuffer: FloatBuffer = ByteBuffer
+                .allocateDirect(pointVerts.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(pointVerts)
+                .apply { position(0) }
+
+            val pointVertexBuffer = VertexBuffer(render, 3, pointBuffer)
+
+            innerCircleMesh = Mesh(
+                render,
+                Mesh.PrimitiveMode.POINTS,
+                null,
+                arrayOf(pointVertexBuffer)
+            )
 
 
             circleFillShader = Shader.createFromAssets(
@@ -442,7 +419,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 val x = (Math.cos(a) * radius).toFloat()
                 val z = (Math.sin(a) * radius).toFloat()
                 val o = (i + 1) * 3
-                fanVerts[o]     = x
+                fanVerts[o] = x
                 fanVerts[o + 1] = 0f
                 fanVerts[o + 2] = z
             }
@@ -463,7 +440,6 @@ class HelloArRenderer(val activity: HelloArActivity) :
             circleFillMesh = Mesh(render, Mesh.PrimitiveMode.TRIANGLES, triIbo, arrayOf(fanVbo))
 
 
-
             // --- Small center dot (filled circle) ---
             val dotSeg = 48
             val dotRadius = radius * 0.5f // половина радіуса зовнішнього круга
@@ -476,7 +452,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 val x = (Math.cos(a) * dotRadius).toFloat()
                 val z = (Math.sin(a) * dotRadius).toFloat()
                 val o = (i + 1) * 3
-                dotVerts[o]     = x
+                dotVerts[o] = x
                 dotVerts[o + 1] = 0f
                 dotVerts[o + 2] = z
             }
@@ -501,6 +477,44 @@ class HelloArRenderer(val activity: HelloArActivity) :
             Log.e(TAG, "Failed to read a required asset file", e)
             showError("Failed to read a required asset file: $e")
         }
+    }
+
+    private val EPS = 0.003f // ~3 мм над площиною
+
+    private fun drawStickerOnPlane(
+        anchor: Anchor,
+        mesh: Mesh,
+        shader: Shader,
+        scale: Float,
+        viewMatrix: FloatArray,
+        projMatrix: FloatArray,
+        tmpModel: FloatArray = FloatArray(16),
+        tmpMV: FloatArray = FloatArray(16),
+        tmpMVP: FloatArray = FloatArray(16)
+    ) {
+        // 1) Модельна матриця = поза якоря (вона вже містить обертання площини)
+        anchor.pose.toMatrix(tmpModel, 0)
+
+        // 2) Маленький зсув уздовж нормалі площини (Y в локалі площини)
+        val n = FloatArray(3)
+        anchor.pose.getTransformedAxis(1, /*scale=*/1f, n, 0) // 1 = Y-axis
+        tmpModel[12] += n[0] * EPS
+        tmpModel[13] += n[1] * EPS
+        tmpModel[14] += n[2] * EPS
+
+        // 3) Масштаб (щоб задати реальний розмір наклейки)
+        val s = FloatArray(16)
+        android.opengl.Matrix.setIdentityM(s, 0)
+        android.opengl.Matrix.scaleM(s, 0, scale, scale, scale)
+        // postMultiply: model = model * scale
+        android.opengl.Matrix.multiplyMM(tmpModel, 0, tmpModel, 0, s, 0)
+
+        // 4) MVP
+        android.opengl.Matrix.multiplyMM(tmpMV, 0, viewMatrix, 0, tmpModel, 0)
+        android.opengl.Matrix.multiplyMM(tmpMVP, 0, projMatrix, 0, tmpMV, 0)
+
+        shader.setMat4("u_MVP", tmpMVP)
+        render.draw(mesh, shader)
     }
 
     override fun onSurfaceChanged(render: SampleRender, width: Int, height: Int) {
@@ -696,8 +710,17 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     // draw distance label
                     render.draw(distanceQuadMesh, distanceShader)
                     // draw circle indicator flush on plane
-                    circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
-                    render.draw(circleMesh, circleShader)
+                    outerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    render.draw(outerCircleMesh, outerCircleShader)
+                    drawStickerOnPlane(
+                        anchor,
+                        innerCircleMesh,
+                        innerCircleShader,
+                        scale = 0.08f,
+                        viewMatrix,
+                        projectionMatrix
+                    )
+
                 }
 
                 measureDistanceFromCamera(frame)
@@ -712,7 +735,14 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     val pose = anchor.pose
                     pose.toMatrix(modelMatrix, 0)
                     Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+                    Matrix.multiplyMM(
+                        modelViewProjectionMatrix,
+                        0,
+                        projectionMatrix,
+                        0,
+                        modelViewMatrix,
+                        0
+                    )
 
 //
 //                    circleFillShader.setMat4("u_MVP", modelViewProjectionMatrix)
@@ -720,8 +750,8 @@ class HelloArRenderer(val activity: HelloArActivity) :
 //
 //                    render.draw(dotFillMesh, circleFillShader)
 
-                    circleShader.setMat4("u_MVP", modelViewProjectionMatrix)
-                    render.draw(circleMesh, circleShader)
+                    innerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    render.draw(innerCircleMesh, innerCircleShader)
 
                 }
 
@@ -734,7 +764,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     val dx = b.tx() - a.tx()
                     val dy = b.ty() - a.ty()
                     val dz = b.tz() - a.tz()
-                    val distMeters = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+                    val distMeters = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
 
 
                     val midT = floatArrayOf(
@@ -749,7 +779,14 @@ class HelloArRenderer(val activity: HelloArActivity) :
 
                     midPose.toMatrix(modelMatrix, 0)
                     Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+                    Matrix.multiplyMM(
+                        modelViewProjectionMatrix,
+                        0,
+                        projectionMatrix,
+                        0,
+                        modelViewMatrix,
+                        0
+                    )
 
 
                     updateDistanceTexture(distMeters)
