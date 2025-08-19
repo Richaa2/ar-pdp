@@ -481,6 +481,15 @@ class HelloArRenderer(val activity: HelloArActivity) :
 
     private val EPS = 0.003f // ~3 мм над площиною
 
+    /** Translate model along the plane normal (anchor's local +Y) by `meters`. */
+    private fun offsetAlongPlaneNormal(pose: Pose, model: FloatArray, meters: Float) {
+        val n = FloatArray(3)
+        pose.getTransformedAxis(1, 1f, n, 0) // 1 = Y axis in pose local space
+        model[12] += n[0] * meters
+        model[13] += n[1] * meters
+        model[14] += n[2] * meters
+    }
+
     private fun drawStickerOnPlane(
         anchor: Anchor,
         mesh: Mesh,
@@ -684,32 +693,31 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 // Visualize anchors created by touch.
                 render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
                 for ((anchor, trackable) in
-                wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
-                    // Orient quad flush on the plane (no billboarding)
+                    wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
+                    // --- build MVP for distance label, lifted above the dot ---
                     anchor.pose.toMatrix(modelMatrix, 0)
-                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
-                    Matrix.multiplyMM(
-                        modelViewProjectionMatrix,
-                        0,
-                        projectionMatrix,
-                        0,
-                        modelViewMatrix,
-                        0
-                    )
                     val camPose = frame.camera.pose
                     val objPose = anchor.pose
                     val dx = objPose.tx() - camPose.tx()
                     val dy = objPose.ty() - camPose.ty()
                     val dz = objPose.tz() - camPose.tz()
                     val distCm = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-                    // update or create the distance texture from the current distance
+
+                    val modelForLabel = modelMatrix.copyOf()
+                    val dotRadiusM = 0.03f
+                    val marginM = 0.01f
+                    offsetAlongPlaneNormal(anchor.pose, modelForLabel, dotRadiusM + marginM)
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelForLabel, 0)
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+
                     updateDistanceTexture(distCm)
-                    // bind the updated texture to the shader and draw the quad
                     distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
                     distanceShader.setTexture("u_Texture", distanceTexture!!)
-                    // draw distance label
                     render.draw(distanceQuadMesh, distanceShader)
-                    // draw circle indicator flush on plane
+                    // --- build MVP for circle/dot flush on plane (no extra lift beyond EPS handled in drawStickerOnPlane) ---
+                    anchor.pose.toMatrix(modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
                     outerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
                     render.draw(outerCircleMesh, outerCircleShader)
                     drawStickerOnPlane(
@@ -720,18 +728,14 @@ class HelloArRenderer(val activity: HelloArActivity) :
                         viewMatrix,
                         projectionMatrix
                     )
-
                 }
-
                 measureDistanceFromCamera(frame)
             }
 
             MeasurementMode.TwoPoints -> {
                 render.clear(virtualSceneFramebuffer, 0f, 0f, 0f, 0f)
 
-
                 for ((anchor, _) in wrappedAnchors.filter { it.anchor.trackingState == TrackingState.TRACKING }) {
-
                     val pose = anchor.pose
                     pose.toMatrix(modelMatrix, 0)
                     Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
@@ -743,40 +747,24 @@ class HelloArRenderer(val activity: HelloArActivity) :
                         modelViewMatrix,
                         0
                     )
-
-//
-//                    circleFillShader.setMat4("u_MVP", modelViewProjectionMatrix)
-//                    render.draw(circleFillMesh, circleFillShader)
-//
-//                    render.draw(dotFillMesh, circleFillShader)
-
                     innerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
                     render.draw(innerCircleMesh, innerCircleShader)
-
                 }
-
 
                 if (wrappedAnchors.size >= 2) {
                     val a = wrappedAnchors[0].anchor.pose
                     val b = wrappedAnchors[1].anchor.pose
-
-
                     val dx = b.tx() - a.tx()
                     val dy = b.ty() - a.ty()
                     val dz = b.tz() - a.tz()
                     val distMeters = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
-
-
                     val midT = floatArrayOf(
                         (a.tx() + b.tx()) / 2f,
                         (a.ty() + b.ty()) / 2f,
                         (a.tz() + b.tz()) / 2f
                     )
-
                     val midQ = floatArrayOf(a.qx(), a.qy(), a.qz(), a.qw())
                     val midPose = com.google.ar.core.Pose(midT, midQ)
-
-
                     midPose.toMatrix(modelMatrix, 0)
                     Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
                     Matrix.multiplyMM(
@@ -787,7 +775,12 @@ class HelloArRenderer(val activity: HelloArActivity) :
                         modelViewMatrix,
                         0
                     )
-
+//                    val modelForLabel = modelMatrix.copyOf()
+//                    val dotRadiusM = 0.05f
+//                    val marginM = 0.01f
+//                    offsetAlongPlaneNormal(midPose, modelForLabel, dotRadiusM + marginM)
+//                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelForLabel, 0)
+//                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
 
                     updateDistanceTexture(distMeters)
 
@@ -870,25 +863,48 @@ class HelloArRenderer(val activity: HelloArActivity) :
         )
     }
 
-    // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
+    /// We must filter the raw hit-test results and create anchors only on valid surfaces.
+    /// Otherwise ARCore can throw FatalException from HitResult.createAnchor() when the pose
+    /// is outside a plane polygon, behind the plane, or refers to a transient/unsupported trackable.
     private fun handleTap(frame: Frame, camera: Camera) {
         if (camera.trackingState != TrackingState.TRACKING) return
-        when (selectedMode) {
-            MeasurementMode.Camera -> {
-                val tap = activity.view.tapHelper.poll() ?: return
-                val hitResult = frame.hitTest(tap).firstOrNull() ?: return
-                placeAnchorCameraMode(hitResult)
-            }
+        val tap = activity.view.tapHelper.poll() ?: return
 
-            MeasurementMode.TwoPoints -> {
-                val tap = activity.view.tapHelper.poll() ?: return
-                val hitResult = frame.hitTest(tap).firstOrNull() ?: return
-                placeAnchorTwoPointsMode(hitResult)
-            }
+        // Collect hits for this tap
+        val hitResultList = frame.hitTest(tap)
 
-            MeasurementMode.SeveralPoints -> TODO()
+        // Keep only safe/valid hits
+        fun isValidHit(hit: HitResult): Boolean {
+            val trackable = hit.trackable
+            return when (trackable) {
+                is Plane -> {
+                    // Must be inside polygon and in front of the plane (positive distance)
+                    trackable.isPoseInPolygon(hit.hitPose) &&
+                            PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
+                }
+                // Accept oriented points (feature points) and depth points
+                is com.google.ar.core.Point -> {
+                    trackable.orientationMode == com.google.ar.core.Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                }
+                is com.google.ar.core.DepthPoint -> true
+                is com.google.ar.core.InstantPlacementPoint -> true
+                else -> false
+            }
         }
 
+        val firstValidHit = hitResultList.firstOrNull { isValidHit(it) } ?: return
+
+        when (selectedMode) {
+            MeasurementMode.Camera -> {
+                placeAnchorCameraMode(firstValidHit)
+            }
+            MeasurementMode.TwoPoints -> {
+                placeAnchorTwoPointsMode(firstValidHit)
+            }
+            MeasurementMode.SeveralPoints -> {
+                // TODO
+            }
+        }
     }
 
     private fun showError(errorMessage: String) =
@@ -934,30 +950,42 @@ class HelloArRenderer(val activity: HelloArActivity) :
     }
 
     private fun placeAnchorCameraMode(hitResult: HitResult) {
-        anchor?.detach()
-        wrappedAnchors.clear()
+        try {
+            // Ensure we always keep a single anchor in this mode
+            anchor?.detach()
+            wrappedAnchors.forEach { it.anchor.detach() }
+            wrappedAnchors.clear()
 
-        val anchor = hitResult.createAnchor()
-        wrappedAnchors.add(WrappedAnchor(anchor, hitResult.trackable!!))
-        Log.d(TAG, "Anchor placed at: ${anchor.pose}")
+            val newAnchor = hitResult.createAnchor()
+            anchor = newAnchor
+            wrappedAnchors.add(WrappedAnchor(newAnchor, hitResult.trackable!!))
+            Log.d(TAG, "Anchor placed at: ${newAnchor.pose}")
+        } catch (t: Throwable) {
+            // Some invalid hits can still slip through on certain devices / frames; fail gracefully
+            Log.e(TAG, "Failed to create anchor from hit: ${t.message}", t)
+        }
     }
 
     private fun placeAnchorTwoPointsMode(hitResult: HitResult) {
-        if (anchorPair == null) {
-            val firstAnchor = hitResult.createAnchor()
-            wrappedAnchors.add(WrappedAnchor(firstAnchor, hitResult.trackable))
-            anchorPair = Pair(firstAnchor, null)
-        } else if (anchorPair?.second == null) {
-            val secondAnchor = hitResult.createAnchor()
-            wrappedAnchors.add(WrappedAnchor(secondAnchor, hitResult.trackable))
-            anchorPair = anchorPair?.copy(second = secondAnchor)
-        } else {
-            anchorPair?.apply {
-                first.detach()
-                second?.detach()
+        try {
+            if (anchorPair == null) {
+                val firstAnchor = hitResult.createAnchor()
+                wrappedAnchors.add(WrappedAnchor(firstAnchor, hitResult.trackable))
+                anchorPair = Pair(firstAnchor, null)
+            } else if (anchorPair?.second == null) {
+                val secondAnchor = hitResult.createAnchor()
+                wrappedAnchors.add(WrappedAnchor(secondAnchor, hitResult.trackable))
+                anchorPair = anchorPair?.copy(second = secondAnchor)
+            } else {
+                anchorPair?.apply {
+                    first.detach()
+                    second?.detach()
+                }
+                anchorPair = null
+                wrappedAnchors.clear()
             }
-            anchorPair = null
-            wrappedAnchors.clear()
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to create anchor (TwoPoints): ${t.message}", t)
         }
     }
 
