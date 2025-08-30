@@ -66,7 +66,7 @@ import kotlin.math.sqrt
 class HelloArRenderer(val activity: HelloArActivity) :
     SampleRender.Renderer, DefaultLifecycleObserver {
 
-    var selectedMode: MeasurementMode = MeasurementMode.Camera
+    var selectedMode: MeasurementMode = MeasurementMode.TwoPoints
 
     // Stored view dimensions for center hit-test
     private var viewWidth: Int = 0
@@ -132,6 +132,13 @@ class HelloArRenderer(val activity: HelloArActivity) :
     private lateinit var circleFillShader: Shader
 
     private lateinit var dotFillMesh: Mesh
+
+    // --- Line between two anchors ---
+    private lateinit var lineShader: Shader
+    private lateinit var lineMesh: Mesh
+    private lateinit var lineVertexBuffer: VertexBuffer
+    private lateinit var lineFloatBuffer: FloatBuffer
+    private val vpMatrix = FloatArray(16) // P * V for line rendering (model = identity)
 
     // Keep track of the last point cloud rendered to avoid updating the VBO if point cloud
     // was not changed.  Do this using the timestamp since we can't compare PointCloud objects.
@@ -473,6 +480,35 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 .put(dotIdx).apply { position(0) }
             val dotIbo = IndexBuffer(render, dotIdxBuf)
             dotFillMesh = Mesh(render, Mesh.PrimitiveMode.TRIANGLES, dotIbo, arrayOf(dotVbo))
+
+            // --- Simple line (two points) to connect two anchors ---
+            // Requires assets/shaders/line.vert and assets/shaders/line.frag (see comments below)
+            lineShader = Shader.createFromAssets(
+                render,
+                "shaders/line.vert",
+                "shaders/line.frag",
+                null
+            )
+
+            // Allocate a dynamic FloatBuffer for two 3D points (x0,y0,z0, x1,y1,z1)
+            val initialLine = floatArrayOf(
+                0f, 0f, 0f,
+                0f, 0f, 0f
+            )
+            lineFloatBuffer = ByteBuffer
+                .allocateDirect(initialLine.size * Float.SIZE_BYTES)
+                .order(ByteOrder.nativeOrder())
+                .asFloatBuffer()
+                .put(initialLine)
+                .apply { position(0) }
+
+            lineVertexBuffer = VertexBuffer(render, /*entriesPerVertex=*/3, lineFloatBuffer)
+            lineMesh = Mesh(
+                render,
+                Mesh.PrimitiveMode.LINES,
+                /*indexBuffer=*/ null,
+                arrayOf(lineVertexBuffer)
+            )
         } catch (e: IOException) {
             Log.e(TAG, "Failed to read a required asset file", e)
             showError("Failed to read a required asset file: $e")
@@ -761,6 +797,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     render.draw(outerCircleMesh, outerCircleShader)
                 }
 
+                // Draw the connecting line between the two anchors (if present)
                 if (wrappedAnchors.size >= 2) {
                     val a = wrappedAnchors[0].anchor.pose
                     val b = wrappedAnchors[1].anchor.pose
@@ -768,6 +805,32 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     val dy = b.ty() - a.ty()
                     val dz = b.tz() - a.tz()
                     val distMeters = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
+                    // --- Update and draw the white line segment between the two anchors ---
+                    // Offset both endpoints +0.03m along each pose's +Y (plane normal), same as inner dot
+                    val na = FloatArray(3)
+                    val nb = FloatArray(3)
+                    a.getTransformedAxis(1, 0.03f, na, 0) // 1 = Y axis
+                    b.getTransformedAxis(1, 0.03f, nb, 0)
+
+                    val ax = a.tx() + na[0]
+                    val ay = a.ty() + na[1]
+                    val az = a.tz() + na[2]
+                    val bx = b.tx() + nb[0]
+                    val by = b.ty() + nb[1]
+                    val bz = b.tz() + nb[2]
+
+                    // Write the lifted endpoints into the dynamic buffer
+                    lineFloatBuffer.rewind()
+                    lineFloatBuffer.put(ax).put(ay).put(az)
+                    lineFloatBuffer.put(bx).put(by).put(bz)
+                    lineFloatBuffer.rewind()
+                    lineVertexBuffer.set(lineFloatBuffer)
+
+                    // For the line we use model = identity; so MVP = P * V
+                    Matrix.multiplyMM(vpMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
+                    lineShader.setMat4("u_VP", vpMatrix)
+                    render.draw(lineMesh, lineShader)
+
                     val midT = floatArrayOf(
                         (a.tx() + b.tx()) / 2f,
                         (a.ty() + b.ty()) / 2f,
@@ -793,7 +856,6 @@ class HelloArRenderer(val activity: HelloArActivity) :
 //                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
 
                     updateDistanceTexture(distMeters)
-
 
                     distanceShader.setMat4("u_MVP", modelViewProjectionMatrix)
                     distanceShader.setTexture("u_Texture", distanceTexture!!)
