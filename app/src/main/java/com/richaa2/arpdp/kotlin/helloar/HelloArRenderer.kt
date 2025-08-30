@@ -381,7 +381,7 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 arrayOf(circleVertexBuffer)
             )
             val pointVerts = floatArrayOf(
-                0f, 0.10f, 0f // X, Y, Z
+                0f, 0f, 0f // X, Y, Z
             )
 
             val pointBuffer: FloatBuffer = ByteBuffer
@@ -497,30 +497,27 @@ class HelloArRenderer(val activity: HelloArActivity) :
         scale: Float,
         viewMatrix: FloatArray,
         projMatrix: FloatArray,
+        extraLiftMeters: Float = 0f,
         tmpModel: FloatArray = FloatArray(16),
         tmpMV: FloatArray = FloatArray(16),
         tmpMVP: FloatArray = FloatArray(16)
     ) {
-        // 1) Модельна матриця = поза якоря (вона вже містить обертання площини)
+        // 1) Model matrix = anchor pose (it already contains plane rotation)
         anchor.pose.toMatrix(tmpModel, 0)
 
-        // 2) Маленький зсув уздовж нормалі площини (Y в локалі площини)
-        val n = FloatArray(3)
-        anchor.pose.getTransformedAxis(1, /*scale=*/1f, n, 0) // 1 = Y-axis
-        tmpModel[12] += n[0] * EPS
-        tmpModel[13] += n[1] * EPS
-        tmpModel[14] += n[2] * EPS
+        // 2) Shift along plane normal = EPS + extraLiftMeters
+        offsetAlongPlaneNormal(anchor.pose, tmpModel, EPS + extraLiftMeters)
 
-        // 3) Масштаб (щоб задати реальний розмір наклейки)
+        // 3) Scale (to set the actual size of the sticker)
         val s = FloatArray(16)
-        android.opengl.Matrix.setIdentityM(s, 0)
-        android.opengl.Matrix.scaleM(s, 0, scale, scale, scale)
+        Matrix.setIdentityM(s, 0)
+        Matrix.scaleM(s, 0, scale, scale, scale)
         // postMultiply: model = model * scale
-        android.opengl.Matrix.multiplyMM(tmpModel, 0, tmpModel, 0, s, 0)
+        Matrix.multiplyMM(tmpModel, 0, tmpModel, 0, s, 0)
 
         // 4) MVP
-        android.opengl.Matrix.multiplyMM(tmpMV, 0, viewMatrix, 0, tmpModel, 0)
-        android.opengl.Matrix.multiplyMM(tmpMVP, 0, projMatrix, 0, tmpMV, 0)
+        Matrix.multiplyMM(tmpMV, 0, viewMatrix, 0, tmpModel, 0)
+        Matrix.multiplyMM(tmpMVP, 0, projMatrix, 0, tmpMV, 0)
 
         shader.setMat4("u_MVP", tmpMVP)
         render.draw(mesh, shader)
@@ -721,12 +718,13 @@ class HelloArRenderer(val activity: HelloArActivity) :
                     outerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
                     render.draw(outerCircleMesh, outerCircleShader)
                     drawStickerOnPlane(
-                        anchor,
-                        innerCircleMesh,
-                        innerCircleShader,
-                        scale = 0.08f,
-                        viewMatrix,
-                        projectionMatrix
+                        anchor = anchor,
+                        mesh = innerCircleMesh,
+                        shader = innerCircleShader,
+                        scale = 1f,
+                        viewMatrix = viewMatrix,
+                        projMatrix = projectionMatrix,
+                        extraLiftMeters = 0.03f
                     )
                 }
                 measureDistanceFromCamera(frame)
@@ -747,8 +745,20 @@ class HelloArRenderer(val activity: HelloArActivity) :
                         modelViewMatrix,
                         0
                     )
-                    innerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
-                    render.draw(innerCircleMesh, innerCircleShader)
+                    drawStickerOnPlane(
+                        anchor = anchor,
+                        mesh = innerCircleMesh,
+                        shader = innerCircleShader,
+                        scale = 1f,
+                        viewMatrix = viewMatrix,
+                        projMatrix = projectionMatrix,
+                        extraLiftMeters = 0.03f
+                    )
+
+                    Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+                    Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0)
+                    outerCircleShader.setMat4("u_MVP", modelViewProjectionMatrix)
+                    render.draw(outerCircleMesh, outerCircleShader)
                 }
 
                 if (wrappedAnchors.size >= 2) {
