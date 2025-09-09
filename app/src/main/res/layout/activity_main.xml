@@ -53,6 +53,38 @@
             android:layout_marginStart="8dp"
             android:text="Mode 2"
             android:textColor="@android:color/white" />
+        <RadioButton
+            android:id="@+id/rb_mode3"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Mode 3"
+            android:textColor="@android:color/white" />
     </RadioGroup>
+
+    <Button
+        android:id="@+id/clear_last_anchor"
+        android:visibility="invisible"
+        android:layout_width="100dp"
+        android:layout_height="50dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginBottom="50dp"
+        android:layout_marginStart="50dp"
+        android:text="Clear Last Anchor"
+        android:textSize="8sp"/>
+
+    <Button
+        android:id="@+id/clear_all_anchors"
+        android:visibility="invisible"
+
+        android:layout_width="100dp"
+        android:layout_height="50dp"
+        android:layout_marginEnd="50dp"
+        android:layout_marginBottom="50dp"
+        android:text="Clear All Anchors"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:textSize="8sp"/>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

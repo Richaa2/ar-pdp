@@ -863,7 +863,9 @@ class HelloArRenderer(val activity: HelloArActivity) :
                 }
             }
 
-            MeasurementMode.SeveralPoints -> Unit
+            MeasurementMode.SeveralPoints -> {
+
+            }
         }
 
 
@@ -1143,6 +1145,13 @@ class HelloArRenderer(val activity: HelloArActivity) :
         selectedMode = mode
         resetForModeChange()
         Log.d("TAG", "selectedmode -> $mode ");
+    }
+    fun clearLastAnchor() {
+
+    }
+    fun clearAllAnchors() {
+
+
     }
 }
 

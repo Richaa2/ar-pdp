@@ -17,6 +17,8 @@ package com.richaa2.arpdp.kotlin.helloar
 
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.widget.Button
 import android.widget.RadioButton
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -50,6 +52,9 @@ class HelloArActivity : AppCompatActivity() {
     lateinit var arCoreSessionHelper: ARCoreSessionLifecycleHelper
     lateinit var view: HelloArView
     lateinit var renderer: HelloArRenderer
+
+    var clearLastAnchorBtn: Button? = null
+    var clearAllAnchorsBtn: Button? = null
 
     val instantPlacementSettings = InstantPlacementSettings()
     val depthSettings = DepthSettings()
@@ -94,16 +99,42 @@ class HelloArActivity : AppCompatActivity() {
 
         val mode1Btn: RadioButton? = findViewById(R.id.rb_mode1)
         val mode2Btn: RadioButton? = findViewById(R.id.rb_mode2)
+        val mode3Btn: RadioButton? = findViewById(R.id.rb_mode3)
+
+        clearLastAnchorBtn = findViewById(R.id.clear_last_anchor)
+        clearAllAnchorsBtn = findViewById(R.id.clear_all_anchors)
 
         // Set initial checked/selected state according to selectedMode
         mode1Btn?.isChecked = renderer.selectedMode is MeasurementMode.Camera
         mode2Btn?.isChecked = renderer.selectedMode is MeasurementMode.TwoPoints
+        mode3Btn?.isChecked = renderer.selectedMode is MeasurementMode.SeveralPoints
+        clearLastAnchorBtn?.visibility =
+            if (renderer.selectedMode is MeasurementMode.SeveralPoints) View.VISIBLE else View.INVISIBLE
+        clearAllAnchorsBtn?.visibility =
+            if (renderer.selectedMode is MeasurementMode.SeveralPoints) View.VISIBLE else View.INVISIBLE
+
+        clearLastAnchorBtn?.setOnClickListener {
+            renderer.clearLastAnchor()
+        }
+        clearAllAnchorsBtn?.setOnClickListener {
+            renderer.clearAllAnchors()
+        }
+
 
         mode1Btn?.setOnClickListener {
             renderer.setSelectedMeasurementMode(MeasurementMode.Camera)
+            clearLastAnchorBtn?.visibility = View.INVISIBLE
+            clearAllAnchorsBtn?.visibility = View.INVISIBLE
         }
         mode2Btn?.setOnClickListener {
             renderer.setSelectedMeasurementMode(MeasurementMode.TwoPoints)
+            clearLastAnchorBtn?.visibility = View.INVISIBLE
+            clearAllAnchorsBtn?.visibility = View.INVISIBLE
+        }
+        mode3Btn?.setOnClickListener {
+            renderer.setSelectedMeasurementMode(MeasurementMode.TwoPoints)
+            clearLastAnchorBtn?.visibility = View.VISIBLE
+            clearAllAnchorsBtn?.visibility = View.VISIBLE
         }
 
         // Sets up an example renderer using our HelloARRenderer.
